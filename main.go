@@ -6,6 +6,7 @@
 //
 // return codes:
 //  1: number of artifacts found exceeds expected result size
+//  2: wrong usage
 //  3: truncated search
 
 package main
@@ -17,6 +18,7 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 )
 
@@ -100,19 +102,61 @@ func (a Fqa) RedirectURL() string {
 	return s
 }
 
-// ConciseNotation returns group:artifact:version[:classifier][@packaging]
+// Concise converts a coordinate in GAV notation into concise notation.
 func (a Gav) ConciseNotation() string {
-	s := fmt.Sprintf("%v:%v:%v",
-		a.Group,
-		a.Artifact,
-		a.Version)
-	if a.Classifier != "" {
-		s += fmt.Sprintf(":%s", a.Classifier)
+	var sb strings.Builder
+	if len(a.Group) > 0 {
+		sb.WriteString(a.Group)
 	}
-	if a.Packaging != "" {
-		s += fmt.Sprintf("@%s", a.Packaging)
+	if len(a.Artifact) > 0 || len(a.Version) > 0 || len(a.Classifier) > 0 {
+		sb.WriteString(":")
 	}
-	return s
+	if len(a.Artifact) > 0 {
+		sb.WriteString(a.Artifact)
+	}
+	if len(a.Version) > 0 || len(a.Classifier) > 0 {
+		sb.WriteString(":")
+	}
+	if len(a.Version) > 0 {
+		sb.WriteString(a.Version)
+	}
+	if len(a.Classifier) > 0 {
+		sb.WriteString(":")
+		sb.WriteString(a.Classifier)
+	}
+	if len(a.Packaging) > 0 {
+		sb.WriteString("@")
+		sb.WriteString(a.Packaging)
+	}
+	return sb.String()
+}
+
+// Concise converts a Maven coordinate in concise notation into a GAV
+func Concise(c string) Gav {
+	var gav Gav
+	cs := strings.Split(c, "@")
+	if len(cs) > 1 {
+		gav.Packaging = cs[1]
+		c = cs[0]
+	}
+	cs = strings.Split(c, ":")
+	switch len(cs) {
+	case 1:
+		gav.Group = cs[0]
+	case 2:
+		gav.Group = cs[0]
+		gav.Artifact = cs[1]
+	case 3:
+		gav.Group = cs[0]
+		gav.Artifact = cs[1]
+		gav.Version = cs[2]
+	case 4:
+		gav.Group = cs[0]
+		gav.Artifact = cs[1]
+		gav.Version = cs[2]
+		gav.Classifier = cs[3]
+	}
+	return gav
 }
 
 // DefaultLayout translates a Gav into a file system hierarchy without leading /
@@ -245,13 +289,29 @@ func main() {
 		// Download
 		fetch = flag.Bool("fetch", true, "Download files found")
 	)
-
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: %s <GAV in concise notation>\n",
+			os.Args[0])
+		flag.PrintDefaults()
+		os.Exit(2)
+	}
 	flag.Parse()
+
 	inst := NexusInstance{*protocol, *server, *port, *contextroot,
 		*username, *password}
 	repo := NexusRepository{inst, *repository}
 
-	gav := Gav{*group, *artifact, *version, *classifier, *packaging}
+	// Either GAV from commandline or via parameters, no mixing
+	var gav Gav
+	switch flag.NArg() {
+	case 0:
+		gav = Gav{*group, *artifact, *version, *classifier, *packaging}
+	case 1:
+		gav = Concise(flag.Arg(0))
+	default:
+		flag.Usage()
+		os.Exit(1)
+	}
 	log.Printf("searching %+v\n", gav)
 
 	res := search(repo, gav)
