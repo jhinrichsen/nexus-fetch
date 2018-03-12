@@ -19,7 +19,10 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -30,7 +33,6 @@ const (
 	defaultPassword = "admin123"
 
 	defaultRepository = "releases"
-	// TODO defaultType       = "repositories"
 )
 
 // NexusInstance holds coordinates of a Nexus installation
@@ -47,8 +49,6 @@ type NexusInstance struct {
 type NexusRepository struct {
 	NexusInstance
 	RepositoryID string
-	// Repositories or Groups
-	// TODO Type string
 }
 
 type searchNGResponse struct {
@@ -89,18 +89,18 @@ type Fqa struct {
 
 // ContentURL return a fetchable URL
 func (a Fqa) ContentURL() string {
-	return fmt.Sprintf("%s://%s:%s%s/content/repositories/%s/%s",
-		a.Protocol, a.Server, a.Port, a.Contextroot, a.RepositoryID,
-		a.DefaultLayout())
+	s := baseUrl(a.NexusRepository).String()
+	s += fmt.Sprintf("content/repositories/%s/%s",
+		a.RepositoryID, a.DefaultLayout())
+	return s
 }
 
 // RedirectURL returns a REST URL that will redirect to the specific version
 // such as LATEST, SNAPSHOT, ...
 func (a Fqa) RedirectURL() string {
-	s := fmt.Sprintf("%s://%s:%s%s"+
-		"/service/local/artifact/maven/redirect"+
+	s := baseUrl(a.NexusRepository).String()
+	s += fmt.Sprintf("service/local/artifact/maven/redirect"+
 		"?r=%s&g=%s&a=%s&v=%s&p=%s",
-		a.Protocol, a.Server, a.Port, a.Contextroot,
 		a.RepositoryID,
 		a.Group, a.Artifact, a.Version, a.Packaging)
 	return s
@@ -211,17 +211,17 @@ func (a Gav) LuceneSearch() string {
 // wildcards have been used that confuse Nexus
 func search(repo NexusRepository, gav Gav) searchNGResponse {
 	params := gav.LuceneSearch()
-	url := fmt.Sprintf("%s://%s:%s%s/service/local/lucene/search?%s",
-		repo.Protocol, repo.Server, repo.Port, repo.Contextroot, params)
+	s := baseUrl(repo).String()
+	s += fmt.Sprintf("service/local/lucene/search?%s", params)
 	if repo.RepositoryID != "" {
-		url += fmt.Sprintf("&repositoryId=%s", repo.RepositoryID)
+		s += fmt.Sprintf("&repositoryId=%s", repo.RepositoryID)
 	}
-	response, err := http.Get(url)
+	response, err := http.Get(s)
 	if err != nil {
-		log.Fatalf("Cannot read url %v: %v\n", url, err)
+		log.Fatalf("Cannot read url %v: %v\n", s, err)
 	}
 	log.Printf("%v returns HTTP status code %v\n",
-		url, response.StatusCode)
+		s, response.StatusCode)
 	if response.StatusCode != 200 {
 		log.Fatalf("Expected status 200 but got %v\n",
 			response.StatusCode)
@@ -267,6 +267,145 @@ func locations(res searchNGResponse, inst NexusInstance) []Fqa {
 	return ls
 }
 
+func fullySpecified(fqa Fqa) bool {
+	gav := fqa.Gav
+	complete := len(fqa.NexusRepository.RepositoryID) > 0 &&
+		len(gav.Group) > 0 &&
+		len(gav.Artifact) > 0 &&
+		len(gav.Version) > 0
+	return complete
+}
+
+func baseUrl(repo NexusRepository) *url.URL {
+	s := fmt.Sprintf("%s://%s:%s/%s",
+		repo.Protocol, repo.Server, repo.Port, repo.Contextroot)
+	log.Printf("base URL: %s\n", s)
+	u, err := url.Parse(s)
+	if err != nil {
+		log.Fatalf("cannot parse URL %s: %v\n", s, err)
+	}
+	return u
+}
+
+// return HTTP status code
+func resolve(coords Fqa) *http.Response {
+	u := baseUrl(coords.NexusRepository)
+	u2, err := u.Parse("service/local/artifact/maven/resolve")
+	q := u2.Query()
+	q.Add("r", coords.NexusRepository.RepositoryID)
+	gav := coords.Gav
+	if len(gav.Group) > 0 {
+		q.Set("g", gav.Group)
+	}
+	if len(gav.Artifact) > 0 {
+		q.Set("a", gav.Artifact)
+	}
+	if len(gav.Version) > 0 {
+		q.Set("v", gav.Version)
+	}
+	if len(gav.Classifier) > 0 {
+		q.Set("c", gav.Classifier)
+	}
+	if len(gav.Packaging) > 0 {
+		q.Set("p", gav.Packaging)
+	}
+	u2.RawQuery = q.Encode()
+	log.Printf("getting %s\n", u2.String())
+	res, err := http.Get(u2.String())
+	if err != nil {
+		log.Fatalf("Cannot read url %v: %v\n", u2, err)
+	}
+	log.Printf("%v returns HTTP status code %v\n",
+		u2, res.StatusCode)
+	if res.StatusCode != 200 {
+		log.Fatalf("Expected status 200 but got %v\n",
+			res.StatusCode)
+	}
+	return res
+}
+
+// return HTTP status code
+func content(coords Fqa) *http.Response {
+	u := baseUrl(coords.NexusRepository)
+	u2, err := u.Parse("service/local/artifact/maven/content")
+	q := u2.Query()
+	q.Add("r", coords.NexusRepository.RepositoryID)
+	gav := coords.Gav
+	if len(gav.Group) > 0 {
+		q.Set("g", gav.Group)
+	}
+	if len(gav.Artifact) > 0 {
+		q.Set("a", gav.Artifact)
+	}
+	if len(gav.Version) > 0 {
+		q.Set("v", gav.Version)
+	}
+	if len(gav.Classifier) > 0 {
+		q.Set("c", gav.Classifier)
+	}
+	if len(gav.Packaging) > 0 {
+		q.Set("p", gav.Packaging)
+	}
+	u2.RawQuery = q.Encode()
+	log.Printf("getting %s\n", u2.String())
+	res, err := http.Get(u2.String())
+	if err != nil {
+		log.Fatalf("Cannot read url %v: %v\n", u2, err)
+	}
+	log.Printf("%v returns HTTP status code %v\n",
+		u2, res.StatusCode)
+	if res.StatusCode != 200 {
+		log.Fatalf("Expected status 200 but got %v\n",
+			res.StatusCode)
+	}
+	return res
+}
+
+func print(res *http.Response) {
+	defer res.Body.Close()
+	body, err := ioutil.ReadAll(res.Body)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(string(body))
+}
+
+func persistBody(res *http.Response, outputDirectory, outputFilename string) {
+	log.Printf("Header: %+v\n", res.Header)
+	defer res.Body.Close()
+	buf, err := ioutil.ReadAll(res.Body)
+	if err != nil {
+		log.Fatal(err)
+	}
+	f := filepath.Join(outputDirectory, outputFilename)
+	log.Printf("writing %s\n", f)
+	if err := ioutil.WriteFile(f, buf, 0644); err != nil {
+		log.Fatal(err)
+	}
+}
+
+// extract filename from Content-Disposition header, format:
+// attachment; filename="helloworld-1.0.0-20180312.173914-4.jar"
+func contentDisposition(res *http.Response) string {
+	v := res.Header.Get("Content-Disposition")
+	r := regexp.MustCompile(`attachment; filename="(.*)"`)
+	ss := r.FindStringSubmatch(v)
+	return ss[1]
+}
+
+// Pick an output filename: user supplied > response > gav
+func filename(userSupplied string, res *http.Response, gav Gav) string {
+	f := userSupplied
+	if len(f) > 0 {
+		return f
+	}
+	f = contentDisposition(res)
+	if len(f) > 0 {
+		return f
+	}
+	return gav.Filename()
+}
+
 func main() {
 	var (
 		// Nexus coordinates
@@ -274,7 +413,7 @@ func main() {
 		server   = flag.String("server", defaultServer,
 			"Nexus server name")
 		port        = flag.String("port", defaultPort, "Nexus port")
-		contextroot = flag.String("contextroot", "/nexus",
+		contextroot = flag.String("contextroot", "nexus/",
 			"Nexus context root")
 		username = flag.String("username", defaultUsername,
 			"Nexus user")
@@ -290,12 +429,13 @@ func main() {
 		packaging  = flag.String("packaging", "", "Maven packaging")
 		classifier = flag.String("classifier", "", "Maven classifier")
 
-		// Abort if search returns 0 elements
-		abortOnEmptySearchResult = flag.Bool(
-			"abortOnEmptySearchResult", false,
+		abortOnNotFound = flag.Bool(
+			"abortOnNotFound", false,
 			"Return 4 if nothing found")
-		// Download
-		fetch = flag.Bool("fetch", true, "Download files found")
+		fetch          = flag.Bool("fetch", true, "Download files found")
+		outputDir      = flag.String("outputDir", ".", "Download directory")
+		outputFilename = flag.String("outputFilename", "",
+			"Download filename, defaults to original artifact name")
 	)
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s <GAV in concise notation>\n",
@@ -320,13 +460,37 @@ func main() {
 		flag.Usage()
 		os.Exit(1)
 	}
-	log.Printf("searching %+v\n", gav)
 
+	fqa := Fqa{repo, gav}
+	// Nexus has all kind of index up-to-date issues w/ searches, so if we
+	// have the required minimum info to fetch an artefact, don't search,
+	// just get it
+	if fullySpecified(fqa) {
+		var res *http.Response
+		if *fetch {
+			log.Println("coordinates fully specified, fetching " +
+				"content...")
+			res = content(fqa)
+			f := filename(*outputFilename, res, gav)
+			persistBody(res, *outputDir, f)
+		} else {
+			log.Println("coordinates fully specified, resolving...")
+			res = resolve(fqa)
+			print(res)
+		}
+		if res.StatusCode == http.StatusNotFound &&
+			*abortOnNotFound {
+			os.Exit(4)
+		}
+		os.Exit(0)
+	}
+
+	log.Printf("searching %+v\n", gav)
 	res := search(repo, gav)
 	log.Printf("Found %v artifacts\n", len(res.Artifacts))
 
 	ls := locations(res, inst)
-	if *abortOnEmptySearchResult && len(ls) == 0 {
+	if *abortOnNotFound && len(ls) == 0 {
 		log.Printf("search returns nothing, aborting")
 		os.Exit(4)
 	}
@@ -347,25 +511,14 @@ func main() {
 			url = a.ContentURL()
 		}
 
-		if !*fetch {
-			continue
-		}
-
-		log.Printf("fetching %s\n", url)
-		res, err := http.Get(url)
-		if err != nil {
-			log.Fatal(err)
-		}
-		log.Printf("Header: %+v\n", res.Header)
-		defer res.Body.Close()
-		buf, err := ioutil.ReadAll(res.Body)
-		if err != nil {
-			log.Fatal(err)
-		}
-		f := a.Gav.Filename()
-		log.Printf("writing %s\n", f)
-		if err := ioutil.WriteFile(f, buf, 0644); err != nil {
-			log.Fatal(err)
+		if *fetch {
+			log.Printf("fetching %s\n", url)
+			res, err := http.Get(url)
+			if err != nil {
+				log.Fatal(err)
+			}
+			f := filename(*outputFilename, res, gav)
+			persistBody(res, *outputDir, f)
 		}
 	}
 }
