@@ -8,6 +8,7 @@
 //  1: number of artifacts found exceeds expected result size
 //  2: wrong usage
 //  3: truncated search
+//  4: nothing found if abort on empty search result enabled
 
 package main
 
@@ -29,6 +30,7 @@ const (
 	defaultPassword = "admin123"
 
 	defaultRepository = "releases"
+	// TODO defaultType       = "repositories"
 )
 
 // NexusInstance holds coordinates of a Nexus installation
@@ -45,6 +47,8 @@ type NexusInstance struct {
 type NexusRepository struct {
 	NexusInstance
 	RepositoryID string
+	// Repositories or Groups
+	// TODO Type string
 }
 
 type searchNGResponse struct {
@@ -286,6 +290,10 @@ func main() {
 		packaging  = flag.String("packaging", "", "Maven packaging")
 		classifier = flag.String("classifier", "", "Maven classifier")
 
+		// Abort if search returns 0 elements
+		abortOnEmptySearchResult = flag.Bool(
+			"abortOnEmptySearchResult", false,
+			"Return 4 if nothing found")
 		// Download
 		fetch = flag.Bool("fetch", true, "Download files found")
 	)
@@ -318,6 +326,10 @@ func main() {
 	log.Printf("Found %v artifacts\n", len(res.Artifacts))
 
 	ls := locations(res, inst)
+	if *abortOnEmptySearchResult && len(ls) == 0 {
+		log.Printf("search returns nothing, aborting")
+		os.Exit(4)
+	}
 	for _, a := range ls {
 		// Ignore POMs
 		if a.Gav.Packaging == "pom" {
