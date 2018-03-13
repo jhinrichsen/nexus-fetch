@@ -1,14 +1,11 @@
 //usr/bin/env go run $0 "$@"; exit
 
-// Housekeeping for Nexus, i.e. artifact deletion.
-// Deleting released artifacts is considered a no-go, especially in Maven land,
-// but some of us operate on limited disk space, and control dependants.
+// Fetch artifacts from Nexus w/o Maven.
 //
 // return codes:
-//  1: number of artifacts found exceeds expected result size
+//  1: unspecific error
 //  2: wrong usage
-//  3: truncated search
-//  4: nothing found if abort on empty search result enabled
+//  4: nothing found if abort on empty search result enabled (mimicking 404)
 
 package main
 
@@ -81,7 +78,7 @@ type Gav struct {
 	Packaging  string `xml:"packaging"`
 }
 
-// Fqa holds coordincates to a fully qualified artifact
+// Fqa holds coordinates to a fully qualified artifact
 type Fqa struct {
 	NexusRepository
 	Gav
@@ -317,10 +314,6 @@ func resolve(coords Fqa) *http.Response {
 	}
 	log.Printf("%v returns HTTP status code %v\n",
 		u2, res.StatusCode)
-	if res.StatusCode != 200 {
-		log.Fatalf("Expected status 200 but got %v\n",
-			res.StatusCode)
-	}
 	return res
 }
 
@@ -371,7 +364,6 @@ func print(res *http.Response) {
 }
 
 func persistBody(res *http.Response, outputDirectory, outputFilename string) {
-	log.Printf("Header: %+v\n", res.Header)
 	defer res.Body.Close()
 	buf, err := ioutil.ReadAll(res.Body)
 	if err != nil {
@@ -458,7 +450,7 @@ func main() {
 		gav = Concise(flag.Arg(0))
 	default:
 		flag.Usage()
-		os.Exit(1)
+		os.Exit(2)
 	}
 
 	fqa := Fqa{repo, gav}
@@ -481,6 +473,10 @@ func main() {
 		if res.StatusCode == http.StatusNotFound &&
 			*abortOnNotFound {
 			os.Exit(4)
+		}
+		if res.StatusCode != 200 {
+			log.Fatalf("Expected status 200 but got %v\n",
+				res.StatusCode)
 		}
 		os.Exit(0)
 	}
